@@ -37,3 +37,4 @@ def record_while_space_pressed(local_path="output.wav"):
         time.sleep(0.01)  # prevents CPU overuse
 
 record_while_space_pressed("recorded_audio.wav")
+       
