@@ -13,7 +13,7 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 BITS = "PCM_16"                           
 
-
+def speech_to_text(region,bucket,input_prefix,output_prefix,sample_rate,channels,bits,):
 s3 = boto3.client("s3", region_name=REGION)
 transcribe = boto3.client("transcribe", region_name=REGION)
 
