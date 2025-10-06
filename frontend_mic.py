@@ -16,7 +16,7 @@ from translate import to_translate_code, translate_text
 st.set_page_config(page_title="🎙️ Live Translate (Mic)", page_icon="🎧", layout="centered")
 
 # Keep consistent with your backend
-REGION = os.getenv("AWS_REGION", "us-east-1")
+REGION = os.getenv("AWS_REGION", "us-east-2")
 BUCKET = "sharvaristranscribebucket"
 INPUT_PREFIX = "audio/"
 OUTPUT_PREFIX = "transcripts/"
