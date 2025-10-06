@@ -1,98 +1,82 @@
-import os, uuid, time, io, argparse
+# transcribe.py
+import uuid
+import time
 import requests
 import boto3
-import sounddevice as sd
-import soundfile as sf
 
+def upload_to_s3(region, bucket, local_file, key):
+    s3 = boto3.client("s3", region_name=region)
+    s3.upload_file(local_file, bucket, key)
+    print(f"[s3] Uploaded -> s3://{bucket}/{key}")
+    return f"s3://{bucket}/{key}"
 
-# --- config ---
-REGION = "us-east-2"                       # your region           
-BUCKET = "sharvaristranscribebucket"       # your S3 bucket's name 
-INPUT_PREFIX = "audio/"                    # where your audio files go in S3
-OUTPUT_PREFIX = "transcripts/"             # where your transcripts go in S3
-                         
+def put_text_to_s3(region, bucket, key, text):
+    s3 = boto3.client("s3", region_name=region)
+    s3.put_object(
+        Bucket=bucket, Key=key, Body=text.encode("utf-8"),
+        ContentType="text/plain; charset=utf-8"
+    )
+    print(f"[s3] Transcript saved -> s3://{bucket}/{key}")
 
-def speech_to_text(region,bucket,input_prefix,output_prefix,audio_file):
-    s3 = boto3.client("s3", region_name=REGION)
-    transcribe = boto3.client("transcribe", region_name=REGION)
+def start_transcribe_job(region, bucket, s3_key, language_code=None,
+                         identify_language=True, language_options=None):
+    transcribe = boto3.client("transcribe", region_name=region)
+    job_name = f"job-{uuid.uuid4().hex}"
+    media_uri = f"s3://{bucket}/{s3_key}"
 
-    # upload the .wav to S3 bucket
-    def upload_to_s3(audio_file: str, key: str):
-        s3.upload_file(audio_file, BUCKET, key)
-        print(f"[s3] Uploaded -> s3://{BUCKET}/{key}")
+    params = dict(
+        TranscriptionJobName=job_name,
+        Media={"MediaFileUri": media_uri},
+        MediaFormat="wav",
+    )
 
-    # transcribe job
-    def start_transcribe_job(s3_key: str, *, language_code: str | None, identify_language: bool, language_options: list[str] | None):
-        job_name = f"job-{uuid.uuid4().hex}"
-        media_uri = f"s3://{BUCKET}/{s3_key}"
+    if identify_language:
+        params["IdentifyLanguage"] = True
+        if language_options:
+            params["LanguageOptions"] = language_options
+    else:
+        params["LanguageCode"] = language_code or "en-US"
 
-        params = dict(
-            TranscriptionJobName=job_name,
-            Media={"MediaFileUri": media_uri},
-            MediaFormat="wav",               # matches what we recorded
-        )
+    transcribe.start_transcription_job(**params)
+    print(f"[tx] Started job: {job_name}")
+    return job_name
 
-        # choose either fixed language or auto-detect
-        if identify_language:
-            params["IdentifyLanguage"] = True
-            if language_options:
-                params["LanguageOptions"] = language_options
-        else:
-            params["LanguageCode"] = language_code or "en-US"
+def wait_get_transcript(region, job_name):
+    """Waits for the job to finish, returns (text, json_uri, lang)."""
+    client = boto3.client("transcribe", region_name=region)
+    while True:
+        job = client.get_transcription_job(TranscriptionJobName=job_name)["TranscriptionJob"]
+        status = job["TranscriptionJobStatus"]
+        if status in ("COMPLETED", "FAILED"):
+            break
+        time.sleep(2)
 
-        transcribe.start_transcription_job(**params)
-        print(f"[tx] Started job: {job_name}")
-        return job_name
+    if status == "FAILED":
+        raise RuntimeError(f"Transcribe failed: {job}")
 
-    # get the text
-    def wait_for_job_and_get_text(job_name: str) -> tuple[str, str, str]:
-        """Returns (plain_text, transcript_json_uri, detected_language_code)."""
-        while True:
-            resp = transcribe.get_transcription_job(TranscriptionJobName=job_name)["TranscriptionJob"]
-            status = resp["TranscriptionJobStatus"]
-            if status in ("COMPLETED", "FAILED"):
-                break
-            time.sleep(2)
+    json_uri = job["Transcript"]["TranscriptFileUri"]
+    data = requests.get(json_uri).json()
+    text = data.get("results", {}).get("transcripts", [{}])[0].get("transcript", "")
+    lang = job.get("LanguageCode", "unknown")
+    return text, json_uri, lang
 
-        if status == "FAILED":
-            raise RuntimeError(f"Transcribe failed: {resp}")
+def transcribe_wav_file(region, bucket, input_prefix, output_prefix,
+                        local_wav_path, language_options=None,
+                        force_language_code=None):
+    audio_key = f"{input_prefix}{uuid.uuid4().hex}.wav"
+    upload_to_s3(region, bucket, local_wav_path, audio_key)
 
-        json_uri = resp["Transcript"]["TranscriptFileUri"]
-        data = requests.get(json_uri).json()
-        text = data["results"]["transcripts"][0]["transcript"] if data["results"]["transcripts"] else ""
-        lang = resp.get("LanguageCode", "unknown")
-        return text, json_uri, lang
+    job = start_transcribe_job(
+        region, bucket, audio_key,
+        language_code=force_language_code,
+        identify_language=force_language_code is None,
+        language_options=language_options,
+    )
 
+    text, json_uri, lang = wait_get_transcript(region, job)
+    print(f"[tx] Detected language: {lang}")
 
-    # upload the transcript to the S3 bucket
-    def put_transcript_text_to_s3(text: str, key: str):
-        s3.put_object(Bucket=BUCKET, Key=key, Body=text.encode("utf-8"), ContentType="text/plain; charset=utf-8")
-        print(f"[s3] Transcript text saved -> s3://{BUCKET}/{key}")
+    transcript_key = f"{output_prefix}{uuid.uuid4().hex}.txt"
+    put_text_to_s3(region, bucket, transcript_key, text)
 
-
-
-    def main():
-        parser = argparse.ArgumentParser(description="Record, upload, transcribe, save transcript to S3.")
-        parser.add_argument("--seconds", type=int, default=6, help="Record duration (seconds)")
-        parser.add_argument("--lang", type=str, default=None, help="Explicit language code (e.g., en-US, es-ES). If omitted, auto-detect.")
-        parser.add_argument("--lang-options", type=str, default="en-US,es-ES,fr-FR", help="Comma list for auto-detect shortlist")
-        args = parser.parse_args()
-
-
-        # 2) upload audio to S3
-        audio_key = f"{INPUT_PREFIX}{uuid.uuid4().hex}.wav"
-        upload_to_s3(audio_file, audio_key)
-
-        # 3) start job
-        identify = args.lang is None
-        job_name = start_transcribe_job(
-            s3_key=audio_key,
-            language_code=args.lang,
-            identify_language=identify,
-            language_options=[x.strip() for x in args.lang_options.split(",")] if identify else None,
-        )
-
-        # 4) wait + get transcript
-        text, json_uri, lang = wait_for_job_and_get_text(job_name)
-        return text
-        
+    return text, lang, audio_key, transcript_key

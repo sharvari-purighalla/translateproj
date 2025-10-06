@@ -2,7 +2,7 @@ import streamlit as st
 import boto3
 
 # --- AWS SETTINGS ---
-REGION = "us-east-1"  # change to your region
+REGION = "us-east-2"  # change to your region
 translate_client = boto3.client("translate", region_name=REGION)
 
 # --- Streamlit UI ---
