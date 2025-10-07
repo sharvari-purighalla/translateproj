@@ -16,8 +16,8 @@ from translate import to_translate_code, translate_text
 
 # --- config ---
 # keep your bucket's region and these clients consistent.
-REGION = "ENTER YOUR REGION"
-BUCKET = "ENTER YOUR BUCKET NAME"
+REGION = "us-east-1"
+BUCKET = "nca-translate-bucket"
 INPUT_PREFIX = "audio/"
 OUTPUT_PREFIX = "transcripts/"
 
